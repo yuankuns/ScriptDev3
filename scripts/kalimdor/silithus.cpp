@@ -41,6 +41,9 @@
 
 #include "precompiled.h"
 #include "ObjectMgr.h"
+#include "AqWarEffortRuntime.h"
+#include "World.h"
+#include "Log.h"
 
 /*###
 ## npc_anachronos_the_ancient
@@ -120,10 +123,21 @@ enum
     SPELL_CAELESTRASZ_MOLTEN_RAIN       = 25150,
 
     SPELL_TIME_STOP                     = 25158,            // Anachronos stops the battle - should trigger 25171
-    SPELL_GLYPH_OF_WARDING              = 25166,            // Sends event 9427 - should activate Go 176148
-    SPELL_PRISMATIC_BARRIER             = 25159,            // Sends event 9425 - should activate Go 176146
-    SPELL_CALL_ANCIENTS                 = 25167,            // Sends event 9426 - should activate Go 176147
-    SPELL_SHATTER_HAMMER                = 25182,            // Breakes the scepter - needs DB coords
+    SPELL_GLYPH_OF_WARDING              = 25166,            // Sends event 9427 - closes GO 176148
+    SPELL_PRISMATIC_BARRIER             = 25159,            // Sends event 9425 - closes GO 176146
+    SPELL_CALL_ANCIENTS                 = 25167,            // Sends event 9426 - closes GO 176147
+    SPELL_SHATTER_HAMMER                = 25182,            // Breaks the scepter at its spell target position
+
+    EVENT_AQ_GATE_PRISMATIC_BARRIER     = 9425,
+    EVENT_AQ_GATE_CALL_ANCIENTS         = 9426,
+    EVENT_AQ_GATE_GLYPH_OF_WARDING      = 9427,
+    GO_AQ_GATE_PRISMATIC_BARRIER        = 176146,
+    GO_AQ_GATE_CALL_ANCIENTS            = 176147,
+    GO_AQ_GATE_GLYPH_OF_WARDING         = 176148,
+    GUID_AQ_GATE_PRISMATIC_BARRIER      = 66334,
+    GUID_AQ_GATE_CALL_ANCIENTS          = 66335,
+    GUID_AQ_GATE_GLYPH_OF_WARDING       = 66336,
+    DISPLAY_SCEPTER_OF_SHIFTING_SANDS   = 33518,
 
     POINT_ID_DRAGON_ATTACK              = 1,
     POINT_ID_EXIT                       = 2,
@@ -140,14 +154,6 @@ enum
     MAX_QIRAJI                          = 6,
     MAX_KALDOREI                        = 20,
 };
-
-/** Known event issues:
- *  The Kaldorei and Qiraji soldiers don't have the correct flags and factions in DB
- *  The Ahn'Qiraj gate gameobjects are missing from DB
- *  The spells used by the dragons upon the Qiraji need core support
- *  The script events sent by the spells which close the AQ gate needs DB support
- *  Can't make Fandral equip the Scepter when Anachronos hands it to him
- */
 
 static const DialogueEntry aEventDialogue[] =
 {
@@ -448,9 +454,11 @@ struct npc_anachronos_the_ancient : public CreatureScript
                     }
                     break;
                 case DATA_HANDLE_SCEPTER:
-                    // Give the scepter to Fandral (it should equip it somehow)
+                    // The scepter is a quest item rather than a hand-equip item.
+                    // Set its display directly so the handoff has the expected visual.
                     if (Creature* pFandral = m_creature->GetMap()->GetCreature(m_fandralGuid))
                     {
+                        pFandral->SetVirtualItemRaw(VIRTUAL_ITEM_SLOT_0, DISPLAY_SCEPTER_OF_SHIFTING_SANDS, 0, 0);
                         DoScriptText(EMOTE_ANACHRONOS_SCEPTER, m_creature, pFandral);
                     }
                     m_creature->SetStandState(UNIT_STAND_STATE_KNEEL);
@@ -789,6 +797,46 @@ struct go_crystalline_tear : public GameObjectScript
     }
 };
 
+// The three dragon spells send map events which close the corresponding gate
+// for 30 seconds. MaNGOS Zero dispatches these through SD3 MapEventScript.
+struct event_aq_gate_closure : public MapEventScript
+{
+    event_aq_gate_closure() : MapEventScript("event_aq_gate_closure") {}
+
+    bool OnReceived(uint32 eventId, Object* source, Object* /*target*/, bool isStart) override
+    {
+        WorldObject* worldSource = ToWorldObject(source);
+        if (!isStart || !worldSource)
+            return false;
+
+        uint32 entry = 0;
+        uint32 guid = 0;
+        switch (eventId)
+        {
+            case EVENT_AQ_GATE_PRISMATIC_BARRIER:
+                entry = GO_AQ_GATE_PRISMATIC_BARRIER;
+                guid = GUID_AQ_GATE_PRISMATIC_BARRIER;
+                break;
+            case EVENT_AQ_GATE_CALL_ANCIENTS:
+                entry = GO_AQ_GATE_CALL_ANCIENTS;
+                guid = GUID_AQ_GATE_CALL_ANCIENTS;
+                break;
+            case EVENT_AQ_GATE_GLYPH_OF_WARDING:
+                entry = GO_AQ_GATE_GLYPH_OF_WARDING;
+                guid = GUID_AQ_GATE_GLYPH_OF_WARDING;
+                break;
+            default:
+                return false;
+        }
+
+        GameObject* gate = worldSource->GetMap()->GetGameObject(ObjectGuid(HIGHGUID_GAMEOBJECT, entry, guid));
+        if (gate && gate->GetGoType() == GAMEOBJECT_TYPE_DOOR && gate->GetGoState() != GO_STATE_READY)
+            gate->UseDoorOrButton(30);
+
+        return true;
+    }
+};
+
 enum
 {
     SPELL_FOOLS_PLIGHT = 23504,
@@ -1114,6 +1162,51 @@ struct npc_solenor_the_slayer : public CreatureScript
     }
 };
 
+// Ahn'Qiraj war effort colossi. Combat uses ScriptedAI's normal melee
+// behavior; the event controller owns the persistent kill state.
+struct npc_aq_war_colossus : public CreatureScript
+{
+    npc_aq_war_colossus() : CreatureScript("npc_aq_war_colossus") {}
+
+    struct npc_aq_war_colossusAI : public ScriptedAI
+    {
+        explicit npc_aq_war_colossusAI(Creature* creature) : ScriptedAI(creature) {}
+
+        void JustRespawned() override
+        {
+            ScriptedAI::JustRespawned();
+            switch (m_creature->GetEntry())
+            {
+                case 15740: DoScriptText(-1999923, m_creature); break;
+                case 15741: DoScriptText(-1999924, m_creature); break;
+                case 15742: DoScriptText(-1999925, m_creature); break;
+                default: break;
+            }
+        }
+
+        void JustDied(Unit* /*killer*/) override
+        {
+            if (!sWorld.getConfig(CONFIG_BOOL_AQ_WAR_EFFORT))
+                return;
+            AqWarEffort::Colossus boss;
+            switch (m_creature->GetEntry())
+            {
+                case 15742: boss = AqWarEffort::Colossus::Ashi; break;
+                case 15741: boss = AqWarEffort::Colossus::Regal; break;
+                case 15740: boss = AqWarEffort::Colossus::Zora; break;
+                default: return;
+            }
+            if (AqWarEffort::GetRuntime().ReportColossusDeath(boss) == AqWarEffort::Result::StorageError)
+                sLog.outError("Failed to persist AQ war effort colossus death (%u); queued for retry.", m_creature->GetEntry());
+        }
+    };
+
+    CreatureAI* GetAI(Creature* creature) override
+    {
+        return new npc_aq_war_colossusAI(creature);
+    }
+};
+
 void AddSC_silithus()
 {
     Script* s;
@@ -1121,7 +1214,11 @@ void AddSC_silithus()
     s->RegisterSelf();
     s = new go_crystalline_tear();
     s->RegisterSelf();
+    s = new event_aq_gate_closure();
+    s->RegisterSelf();
 
     s = new npc_solenor_the_slayer();
+    s->RegisterSelf();
+    s = new npc_aq_war_colossus();
     s->RegisterSelf();
 }
