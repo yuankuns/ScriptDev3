@@ -607,7 +607,7 @@ struct npc_anachronos_the_ancient : public CreatureScript
                 Geometry::Vector3(aEternalBoardMovement[10].m_fX, aEternalBoardMovement[10].m_fY,
                     aEternalBoardMovement[10].m_fZ), group->radius);
             m_creature->SummonCreature(group->entry, position.x, position.y, position.z, 0.0f,
-                TEMPSPAWN_CORPSE_DESPAWN, 0);
+                TEMPSPAWN_TIMED_OOC_OR_DEAD_DESPAWN, 180000);
             // The Classic quest script spaces its first wave over 10–70s.
             // The movement script's final seven troops arrive about 50s after
             // its first wave, so preserve that pause in the local scene too.
