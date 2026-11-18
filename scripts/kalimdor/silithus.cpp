@@ -150,8 +150,13 @@ enum
     DATA_CAELASTRASZ_ATTACK             = 9,
 
     MAX_DRAGONS                         = 4,
-    AQ_ARMY_WAVE_ONE                    = 1,
-    AQ_ARMY_WAVE_TWO                    = 2,
+};
+
+struct AqArmySpawn
+{
+    uint32 entry;
+    uint32 delayMs;
+    float x, y, z, orientation;
 };
 
 static const DialogueEntry aEventDialogue[] =
@@ -261,20 +266,24 @@ struct npc_anachronos_the_ancient : public CreatureScript
         ObjectGuid m_triggerGuid;
 
         GuidList m_lQirajiWarriorsList;
-        uint32 m_armySpawnTimer = 0;
-        uint32 m_armySpawnIndex = 0;
-        uint8 m_armySpawnWave = 0;
-        bool m_armyWaveTwoQueued = false;
+        uint32 m_sceneElapsedMs = 0;
+        uint32 m_waveOneIndex = 0;
+        uint32 m_waveTwoIndex = 0;
+        uint32 m_waveTwoStartMs = 0;
+        bool m_waveOneActive = false;
+        bool m_waveTwoActive = false;
 
         void Reset() override
         {
             // We summon the rest of the dragons on timer
             m_uiEventTimer = 100;
             m_uiEventStage = 0;
-            m_armySpawnTimer = 0;
-            m_armySpawnIndex = 0;
-            m_armySpawnWave = 0;
-            m_armyWaveTwoQueued = false;
+            m_sceneElapsedMs = 0;
+            m_waveOneIndex = 0;
+            m_waveTwoIndex = 0;
+            m_waveTwoStartMs = 0;
+            m_waveOneActive = false;
+            m_waveTwoActive = false;
         }
 
         void JustDidDialogueStep(int32 iEntry) override
@@ -307,11 +316,10 @@ struct npc_anachronos_the_ancient : public CreatureScript
                     break;
                 case NPC_ANACHRONOS_QUEST_TRIGGER:
                     // The Classic movement script adds its second combatant
-                    // wave as the dragons engage. Queue it behind the initial
-                    // wave so the two sets remain staggered if updates lag.
-                    m_armyWaveTwoQueued = true;
-                    if (!m_armySpawnWave)
-                        StartArmyWave(AQ_ARMY_WAVE_TWO);
+                    // wave as the dragons engage. Start its source-relative
+                    // schedule at this corresponding scene cue.
+                    m_waveTwoStartMs = m_sceneElapsedMs;
+                    m_waveTwoActive = true;
                     // Move Merithra to attack
                     if (Creature* pTrigger = GetClosestCreatureWithEntry(m_creature, NPC_ANACHRONOS_QUEST_TRIGGER, 35.0f))
                     {
@@ -545,85 +553,142 @@ struct npc_anachronos_the_ancient : public CreatureScript
 
         void DoSummonWarriors()
         {
-            StartArmyWave(AQ_ARMY_WAVE_ONE);
+            m_waveOneActive = true;
         }
 
-        void StartArmyWave(uint8 wave)
+        void SummonArmySpawn(AqArmySpawn const& spawn)
         {
-            m_armySpawnWave = wave;
-            m_armySpawnIndex = 0;
-            m_armySpawnTimer = 0;
-        }
-
-        void UpdateArmySummoning(uint32 diff)
-        {
-            if (!m_armySpawnWave)
-                return;
-            if (m_armySpawnTimer > diff)
-            {
-                m_armySpawnTimer -= diff;
-                return;
-            }
-
-            struct SpawnGroup { uint32 entry; uint8 count; float radius; };
-            static SpawnGroup const waveOne[] = {
-                {NPC_ANUBISATH_CONQUEROR, 3, 20.0f},
-                {NPC_QIRAJI_WASP, 8, 15.0f},
-                {NPC_KALDOREI_INFANTRY, 30, 10.0f},
-                {NPC_QIRAJI_TANK, 9, 15.0f},
-                {NPC_QIRAJI_DRONE, 11, 15.0f}
-            };
-            static SpawnGroup const waveTwo[] = {
-                {NPC_QIRAJI_TANK, 11, 15.0f},
-                {NPC_QIRAJI_DRONE, 9, 15.0f},
-                {NPC_QIRAJI_WASP, 6, 15.0f},
-                {NPC_KALDOREI_INFANTRY, 6, 10.0f},
-                {NPC_QIRAJI_WASP, 3, 15.0f},
-                {NPC_QIRAJI_DRONE, 4, 15.0f}
-            };
-            SpawnGroup const* groups = m_armySpawnWave == AQ_ARMY_WAVE_ONE ? waveOne : waveTwo;
-            uint32 const groupCount = m_armySpawnWave == AQ_ARMY_WAVE_ONE ? sizeof(waveOne) / sizeof(waveOne[0]) : sizeof(waveTwo) / sizeof(waveTwo[0]);
-            uint32 total = 0;
-            for (uint32 i = 0; i < groupCount; ++i)
-                total += groups[i].count;
-
-            if (m_armySpawnIndex >= total)
-            {
-                if (m_armySpawnWave == AQ_ARMY_WAVE_ONE && m_armyWaveTwoQueued)
-                    StartArmyWave(AQ_ARMY_WAVE_TWO);
-                else
-                    m_armySpawnWave = 0;
-                return;
-            }
-
-            uint32 index = m_armySpawnIndex++;
-            SpawnGroup const* group = groups;
-            while (index >= group->count)
-            {
-                index -= group->count;
-                ++group;
-            }
-            Geometry::Vector3 const position = RandomGroundPointNear(*m_creature,
-                Geometry::Vector3(aEternalBoardMovement[10].m_fX, aEternalBoardMovement[10].m_fY,
-                    aEternalBoardMovement[10].m_fZ), group->radius);
-            m_creature->SummonCreature(group->entry, position.x, position.y, position.z, 0.0f,
+            m_creature->SummonCreature(spawn.entry, spawn.x, spawn.y, spawn.z, spawn.orientation,
                 TEMPSPAWN_TIMED_OOC_OR_DEAD_DESPAWN, 180000);
-            // The Classic quest script spaces its first wave over 10–70s.
-            // The movement script's final seven troops arrive about 50s after
-            // its first wave, so preserve that pause in the local scene too.
-            if (m_armySpawnWave == AQ_ARMY_WAVE_TWO && m_armySpawnIndex == 32)
-                m_armySpawnTimer = 50000;
-            else if (m_armySpawnWave == AQ_ARMY_WAVE_TWO && m_armySpawnIndex > 32)
-                m_armySpawnTimer = 100;
-            else
-                m_armySpawnTimer = m_armySpawnWave == AQ_ARMY_WAVE_TWO ? 1250 : 1000;
+        }
+
+        void UpdateArmySummoning()
+        {
+            static AqArmySpawn const waveOne[] = {
+                {15424, 10000, -8084.521f, 1534.588f, 2.7344015f, 4.886443138122558593f},
+                {15424, 11000, -8093.5166f, 1518.3163f, 2.8594015f, 0.756263673305511474f},
+                {15424, 12000, -8095.279f, 1537.7485f, 2.9326189f, 4.624593257904052734f},
+                {15414, 13000, -8082.606f, 1530.9467f, 2.7344015f, 3.74396371841430664f},
+                {15414, 14000, -8084.1543f, 1534.5504f, 2.7344015f, 4.789569854736328125f},
+                {15414, 15000, -8088.1025f, 1518.3938f, 2.964626f, 4.268512725830078125f},
+                {15414, 16000, -8091.9814f, 1511.5386f, 3.3312032f, 1.638396978378295898f},
+                {15414, 17000, -8093.04f, 1521.0588f, 2.7055414f, 3.159045934677124023f},
+                {15414, 18000, -8093.7124f, 1511.7349f, 3.021877f, 1.966364026069641113f},
+                {15414, 19000, -8094.366f, 1520.0853f, 2.7344015f, 2.097927093505859375f},
+                {15414, 20000, -8093.6265f, 1540.3372f, 2.7925682f, 0.64547586441040039f},
+                {15423, 21000, -8096.85f, 1517.41f, 2.62497f, 0.2538f},
+                {15423, 22000, -8096.16f, 1520.41f, 2.61089f, 1.3023f},
+                {15423, 23000, -8093.92f, 1523.24f, 2.63438f, 0.7211f},
+                {15423, 24000, -8089.77f, 1523.89f, 2.61413f, 0.0378f},
+                {15423, 25000, -8086.45f, 1522.19f, 2.6211f, 5.7595f},
+                {15423, 26000, -8085.0f, 1518.58f, 2.69892f, 4.87201f},
+                {15423, 27000, -8085.81f, 1515.03f, 3.1137f, 4.49109f},
+                {15423, 28000, -8088.1f, 1512.14f, 3.44917f, 3.82743f},
+                {15423, 29000, -8092.39f, 1511.83f, 3.14766f, 3.2619f},
+                {15423, 30000, -8095.51f, 1513.85f, 2.67505f, 2.2880f},
+                {15423, 31000, -8095.81f, 1532.9f, 2.97344f, 1.45553f},
+                {15423, 32000, -8097.73f, 1536.73f, 3.01208f, 2.0445f},
+                {15423, 33000, -8098.41f, 1540.29f, 3.03665f, 1.2081f},
+                {15423, 34000, -8095.92f, 1543.42f, 2.73728f, 0.6112f},
+                {15423, 35000, -8092.01f, 1543.66f, 2.61425f, 0.0339f},
+                {15423, 36000, -8088.26f, 1542.46f, 2.61052f, 5.9323f},
+                {15423, 37000, -8085.55f, 1537.87f, 2.61052f, 4.8759f},
+                {15423, 38000, -8087.66f, 1533.79f, 2.61052f, 3.9923f},
+                {15423, 39000, -8090.71f, 1532.95f, 2.71019f, 3.4111f},
+                {15423, 40000, -8093.79f, 1532.91f, 2.86282f, 3.0734f},
+                {15423, 41000, -8089.39f, 1530.44f, 2.67252f, 0.5798f},
+                {15423, 42000, -8086.38f, 1527.78f, 2.60994f, 5.5160f},
+                {15423, 43000, -8081.67f, 1528.87f, 2.60994f, 0.3913f},
+                {15423, 44000, -8079.11f, 1532.48f, 2.60994f, 1.1610f},
+                {15423, 45000, -8079.61f, 1537.63f, 2.60994f, 1.9110f},
+                {15423, 46000, -8083.76f, 1540.84f, 2.60994f, 2.7475f},
+                {15423, 47000, -8088.28f, 1538.65f, 2.60994f, 3.4740f},
+                {15423, 48000, -8091.51f, 1535.63f, 2.67311f, 4.0826f},
+                {15423, 49000, -8092.32f, 1531.82f, 2.78504f, 4.5617f},
+                {15423, 50000, -8089.95f, 1528.06f, 2.65737f, 5.5710f},
+                {15422, 51000, -8082.1353f, 1529.8281f, 2.7344015f, 3.373809099197387695f},
+                {15422, 52000, -8082.596f, 1519.3921f, 2.873776f, 4.001942634582519531f},
+                {15422, 53000, -8087.275f, 1519.5825f, 2.8576925f, 2.785885334014892578f},
+                {15422, 54000, -8087.958f, 1518.5608f, 2.9446065f, 2.453642129898071289f},
+                {15422, 55000, -8089.2812f, 1534.7256f, 2.7344015f, 5.322139739990234375f},
+                {15422, 56000, -8091.786f, 1537.9224f, 2.7344015f, 5.328545570373535156f},
+                {15422, 57000, -8093.0737f, 1518.0198f, 2.8594015f, 0.898447096347808837f},
+                {15422, 58000, -8093.1265f, 1512.537f, 3.191799f, 4.358320236206054687f},
+                {15422, 59000, -8092.011f, 1541.1951f, 2.7344015f, 4.814171314239501953f},
+                {15421, 60000, -8083.5586f, 1513.2365f, 3.1731222f, 1.970927238464355468f},
+                {15421, 61000, -8085.1436f, 1512.9519f, 3.3675802f, 1.528013944625854492f},
+                {15421, 62000, -8086.7524f, 1528.6262f, 2.7344015f, 1.267617464065551757f},
+                {15421, 63000, -8088.752f, 1517.8536f, 2.9983563f, 2.162188529968261718f},
+                {15421, 64000, -8088.8975f, 1517.7604f, 2.9844015f, 0.283090144395828247f},
+                {15421, 65000, -8089.0596f, 1532.3508f, 2.7344015f, 5.283954620361328125f},
+                {15421, 66000, -8088.9673f, 1539.9233f, 2.7344015f, 5.818657875061035156f},
+                {15421, 67000, -8090.7905f, 1517.2306f, 2.9844015f, 3.400722980499267578f},
+                {15421, 68000, -8090.5513f, 1509.6268f, 3.2168355f, 5.228849411010742187f},
+                {15421, 69000, -8090.644f, 1509.9595f, 3.308448f, 5.330722332000732421f},
+                {15421, 70000, -8089.866f, 1540.7572f, 2.7344015f, 6.091379165649414062f}
+            };
+            static AqArmySpawn const waveTwo[] = {
+                {15422, 25001, -8096.1157f, 1516.818f, 2.7167563f, 1.134464025497436523f},
+                {15422, 25002, -8080.6895f, 1512.5712f, 2.9955852f, 5.044001579284667968f},
+                {15422, 25003, -8099.3203f, 1500.8727f, 2.6927383f, 3.019419670104980468f},
+                {15422, 25004, -8077.5063f, 1525.3082f, 2.6927383f, 3.298672199249267578f},
+                {15422, 25005, -8103.316f, 1554.271f, 4.1517234f, 1.151917338371276855f},
+                {15422, 25006, -8107.975f, 1551.8503f, 4.5801725f, 5.323254108428955078f},
+                {15422, 25007, -8091.7734f, 1547.8002f, 2.7820363f, 3.019419670104980468f},
+                {15422, 25008, -8091.2344f, 1537.9305f, 2.7091513f, 2.58308720588684082f},
+                {15422, 25009, -8106.6147f, 1501.0076f, 2.7671623f, 0.331612557172775268f},
+                {15422, 25010, -8108.7397f, 1510.966f, 2.7452133f, 0.209439516067504882f},
+                {15422, 25011, -8081.764f, 1529.9165f, 2.6927383f, 0.122173048555850982f},
+                {15421, 30000, -8078.816f, 1538.9602f, 2.6927333f, 0.139626339077949523f},
+                {15421, 50500, -8078.816f, 1538.9602f, 2.6927333f, 0.139626339077949523f},
+                {15421, 51500, -8087.6978f, 1516.2865f, 3.1868932f, 6.056292533874511718f},
+                {15421, 52500, -8090.362f, 1503.5001f, 2.7152743f, 3.298672199249267578f},
+                {15421, 53500, -8085.387f, 1511.4579f, 3.4270213f, 2.58308720588684082f},
+                {15421, 54500, -8085.819f, 1497.9415f, 2.6927474f, 1.326450228691101074f},
+                {15421, 55500, -8080.5635f, 1506.1622f, 2.8614993f, 3.473205089569091796f},
+                {15421, 56500, -8096.567f, 1542.1442f, 2.8728862f, 0.314159274101257324f},
+                {15421, 57500, -8107.0103f, 1535.819f, 3.3525844f, 0.401425719261169433f},
+                {15421, 58500, -8100.2603f, 1550.8744f, 3.5356762f, 2.932153224945068359f},
+                {15414, 59500, -8084.222f, 1519.9562f, 2.7359202f, 0.92502450942993164f},
+                {15414, 60500, -8093.04f, 1521.0588f, 2.7055414f, 3.159045934677124023f},
+                {15414, 61500, -8111.078f, 1498.4434f, 3.2436872f, 3.001966238021850585f},
+                {15414, 62500, -8087.0923f, 1552.5841f, 3.4185972f, 5.462880611419677734f},
+                {15414, 63500, -8093.4497f, 1511.104f, 3.0333064f, 4.136430263519287109f},
+                {15414, 64500, -8076.758f, 1533.0376f, 2.6927383f, 4.345870018005371093f},
+                {15423, 64501, -8095.92f, 1543.42f, 2.73728f, 0.6112f},
+                {15423, 64502, -8092.01f, 1543.66f, 2.61425f, 0.0339f},
+                {15423, 64503, -8088.26f, 1542.46f, 2.61052f, 5.9323f},
+                {15423, 64504, -8085.55f, 1537.87f, 2.61052f, 4.8759f},
+                {15423, 64505, -8087.66f, 1533.79f, 2.61052f, 3.9923f},
+                {15423, 64506, -8090.71f, 1532.95f, 2.71019f, 3.4111f},
+                {15414, 115000, -8084.144f, 1531.8539f, 2.6927302f, 6.2657318115234375f},
+                {15414, 115100, -8088.3696f, 1531.313f, 2.7210321f, 6.230825424194335937f},
+                {15414, 115200, -8085.4287f, 1536.4481f, 2.6927342f, 3.420845270156860351f},
+                {15421, 115300, -8091.2744f, 1558.0068f, 4.2844644f, 4.817108631134033203f},
+                {15421, 115400, -8103.6094f, 1541.0853f, 3.7910812f, 0.296705961227416992f},
+                {15421, 115500, -8082.349f, 1548.36f, 2.9380612f, 5.16617441177368164f}
+            };
+            if (m_waveOneActive && m_waveOneIndex < sizeof(waveOne) / sizeof(waveOne[0]) &&
+                m_sceneElapsedMs >= waveOne[m_waveOneIndex].delayMs)
+            {
+                SummonArmySpawn(waveOne[m_waveOneIndex++]);
+                if (m_waveOneIndex == sizeof(waveOne) / sizeof(waveOne[0]))
+                    m_waveOneActive = false;
+            }
+            if (m_waveTwoActive && m_waveTwoIndex < sizeof(waveTwo) / sizeof(waveTwo[0]) &&
+                m_sceneElapsedMs - m_waveTwoStartMs >= waveTwo[m_waveTwoIndex].delayMs)
+            {
+                SummonArmySpawn(waveTwo[m_waveTwoIndex++]);
+                if (m_waveTwoIndex == sizeof(waveTwo) / sizeof(waveTwo[0]))
+                    m_waveTwoActive = false;
+            }
         }
 
         void DoUnsummonArmy()
         {
-            // Do not let a queued wave continue after the scene has cleaned up.
-            m_armySpawnWave = 0;
-            m_armyWaveTwoQueued = false;
+            // Do not let either scheduled wave continue after scene cleanup.
+            m_waveOneActive = false;
+            m_waveTwoActive = false;
             for (GuidList::const_iterator itr = m_lQirajiWarriorsList.begin(); itr != m_lQirajiWarriorsList.end(); ++itr)
             {
                 if (Creature* pTemp = m_creature->GetMap()->GetCreature(*itr))
@@ -750,8 +815,9 @@ struct npc_anachronos_the_ancient : public CreatureScript
 
         void UpdateAI(const uint32 uiDiff) override
         {
+            m_sceneElapsedMs += uiDiff;
             DialogueUpdate(uiDiff);
-            UpdateArmySummoning(uiDiff);
+            UpdateArmySummoning();
 
             if (m_uiEventTimer)
             {
