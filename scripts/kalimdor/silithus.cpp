@@ -150,9 +150,8 @@ enum
     DATA_CAELASTRASZ_ATTACK             = 9,
 
     MAX_DRAGONS                         = 4,
-    MAX_CONQUERORS                      = 3,
-    MAX_QIRAJI                          = 6,
-    MAX_KALDOREI                        = 20,
+    AQ_ARMY_WAVE_ONE                    = 1,
+    AQ_ARMY_WAVE_TWO                    = 2,
 };
 
 static const DialogueEntry aEventDialogue[] =
@@ -262,12 +261,20 @@ struct npc_anachronos_the_ancient : public CreatureScript
         ObjectGuid m_triggerGuid;
 
         GuidList m_lQirajiWarriorsList;
+        uint32 m_armySpawnTimer = 0;
+        uint32 m_armySpawnIndex = 0;
+        uint8 m_armySpawnWave = 0;
+        bool m_armyWaveTwoQueued = false;
 
         void Reset() override
         {
             // We summon the rest of the dragons on timer
             m_uiEventTimer = 100;
             m_uiEventStage = 0;
+            m_armySpawnTimer = 0;
+            m_armySpawnIndex = 0;
+            m_armySpawnWave = 0;
+            m_armyWaveTwoQueued = false;
         }
 
         void JustDidDialogueStep(int32 iEntry) override
@@ -299,6 +306,12 @@ struct npc_anachronos_the_ancient : public CreatureScript
                     }
                     break;
                 case NPC_ANACHRONOS_QUEST_TRIGGER:
+                    // The Classic movement script adds its second combatant
+                    // wave as the dragons engage. Queue it behind the initial
+                    // wave so the two sets remain staggered if updates lag.
+                    m_armyWaveTwoQueued = true;
+                    if (!m_armySpawnWave)
+                        StartArmyWave(AQ_ARMY_WAVE_TWO);
                     // Move Merithra to attack
                     if (Creature* pTrigger = GetClosestCreatureWithEntry(m_creature, NPC_ANACHRONOS_QUEST_TRIGGER, 35.0f))
                     {
@@ -528,56 +541,89 @@ struct npc_anachronos_the_ancient : public CreatureScript
                 m_creature->SummonCreature(aEternalBoardNPCs[i].m_uiEntry, aEternalBoardNPCs[i].m_fX, aEternalBoardNPCs[i].m_fY, aEternalBoardNPCs[i].m_fZ, aEternalBoardNPCs[i].m_fO, TEMPSPAWN_CORPSE_DESPAWN, 0);
             }
 
-            // Also summon the 3 anubisath conquerors
-            float fX, fY, fZ;
-            for (uint8 i = 0; i < MAX_CONQUERORS; ++i)
-            {
-                const Geometry::Vector3 randSpot5 = RandomGroundPointNear(*m_creature, Geometry::Vector3(aEternalBoardMovement[10].m_fX, aEternalBoardMovement[10].m_fY, aEternalBoardMovement[10].m_fZ), 20.0f);
-                fX = randSpot5.x;
-                fY = randSpot5.y;
-                fZ = randSpot5.z;
-                m_creature->SummonCreature(NPC_ANUBISATH_CONQUEROR, fX, fY, fZ, 0, TEMPSPAWN_CORPSE_DESPAWN, 0);
-            }
         }
 
         void DoSummonWarriors()
         {
-            float fX, fY, fZ;
-            // Summon kaldorei warriors
-            for (uint8 i = 0; i < MAX_KALDOREI; ++i)
+            StartArmyWave(AQ_ARMY_WAVE_ONE);
+        }
+
+        void StartArmyWave(uint8 wave)
+        {
+            m_armySpawnWave = wave;
+            m_armySpawnIndex = 0;
+            m_armySpawnTimer = 0;
+        }
+
+        void UpdateArmySummoning(uint32 diff)
+        {
+            if (!m_armySpawnWave)
+                return;
+            if (m_armySpawnTimer > diff)
             {
-                const Geometry::Vector3 randSpot4 = RandomGroundPointNear(*m_creature, Geometry::Vector3(aEternalBoardMovement[10].m_fX, aEternalBoardMovement[10].m_fY, aEternalBoardMovement[10].m_fZ), 10.0f);
-                fX = randSpot4.x;
-                fY = randSpot4.y;
-                fZ = randSpot4.z;
-                m_creature->SummonCreature(NPC_KALDOREI_INFANTRY, fX, fY, fZ, 0.0f, TEMPSPAWN_CORPSE_DESPAWN, 0);
+                m_armySpawnTimer -= diff;
+                return;
             }
 
-            // Summon Qiraji warriors
-            for (uint8 i = 0; i < MAX_QIRAJI; ++i)
+            struct SpawnGroup { uint32 entry; uint8 count; float radius; };
+            static SpawnGroup const waveOne[] = {
+                {NPC_ANUBISATH_CONQUEROR, 3, 20.0f},
+                {NPC_QIRAJI_WASP, 8, 15.0f},
+                {NPC_KALDOREI_INFANTRY, 30, 10.0f},
+                {NPC_QIRAJI_TANK, 9, 15.0f},
+                {NPC_QIRAJI_DRONE, 11, 15.0f}
+            };
+            static SpawnGroup const waveTwo[] = {
+                {NPC_QIRAJI_TANK, 11, 15.0f},
+                {NPC_QIRAJI_DRONE, 9, 15.0f},
+                {NPC_QIRAJI_WASP, 6, 15.0f},
+                {NPC_KALDOREI_INFANTRY, 6, 10.0f},
+                {NPC_QIRAJI_WASP, 3, 15.0f},
+                {NPC_QIRAJI_DRONE, 4, 15.0f}
+            };
+            SpawnGroup const* groups = m_armySpawnWave == AQ_ARMY_WAVE_ONE ? waveOne : waveTwo;
+            uint32 const groupCount = m_armySpawnWave == AQ_ARMY_WAVE_ONE ? sizeof(waveOne) / sizeof(waveOne[0]) : sizeof(waveTwo) / sizeof(waveTwo[0]);
+            uint32 total = 0;
+            for (uint32 i = 0; i < groupCount; ++i)
+                total += groups[i].count;
+
+            if (m_armySpawnIndex >= total)
             {
-                const Geometry::Vector3 randSpot3 = RandomGroundPointNear(*m_creature, Geometry::Vector3(aEternalBoardMovement[10].m_fX, aEternalBoardMovement[10].m_fY, aEternalBoardMovement[10].m_fZ), 15.0f);
-                fX = randSpot3.x;
-                fY = randSpot3.y;
-                fZ = randSpot3.z;
-                m_creature->SummonCreature(NPC_QIRAJI_WASP, fX, fY, fZ, 0.0f, TEMPSPAWN_CORPSE_DESPAWN, 0);
-
-                const Geometry::Vector3 randSpot2 = RandomGroundPointNear(*m_creature, Geometry::Vector3(aEternalBoardMovement[10].m_fX, aEternalBoardMovement[10].m_fY, aEternalBoardMovement[10].m_fZ), 15.0f);
-                fX = randSpot2.x;
-                fY = randSpot2.y;
-                fZ = randSpot2.z;
-                m_creature->SummonCreature(NPC_QIRAJI_DRONE, fX, fY, fZ, 0.0f, TEMPSPAWN_CORPSE_DESPAWN, 0);
-
-                const Geometry::Vector3 randSpot1 = RandomGroundPointNear(*m_creature, Geometry::Vector3(aEternalBoardMovement[10].m_fX, aEternalBoardMovement[10].m_fY, aEternalBoardMovement[10].m_fZ), 15.0f);
-                fX = randSpot1.x;
-                fY = randSpot1.y;
-                fZ = randSpot1.z;
-                m_creature->SummonCreature(NPC_QIRAJI_TANK, fX, fY, fZ, 0.0f, TEMPSPAWN_CORPSE_DESPAWN, 0);
+                if (m_armySpawnWave == AQ_ARMY_WAVE_ONE && m_armyWaveTwoQueued)
+                    StartArmyWave(AQ_ARMY_WAVE_TWO);
+                else
+                    m_armySpawnWave = 0;
+                return;
             }
+
+            uint32 index = m_armySpawnIndex++;
+            SpawnGroup const* group = groups;
+            while (index >= group->count)
+            {
+                index -= group->count;
+                ++group;
+            }
+            Geometry::Vector3 const position = RandomGroundPointNear(*m_creature,
+                Geometry::Vector3(aEternalBoardMovement[10].m_fX, aEternalBoardMovement[10].m_fY,
+                    aEternalBoardMovement[10].m_fZ), group->radius);
+            m_creature->SummonCreature(group->entry, position.x, position.y, position.z, 0.0f,
+                TEMPSPAWN_CORPSE_DESPAWN, 0);
+            // The Classic quest script spaces its first wave over 10–70s.
+            // The movement script's final seven troops arrive about 50s after
+            // its first wave, so preserve that pause in the local scene too.
+            if (m_armySpawnWave == AQ_ARMY_WAVE_TWO && m_armySpawnIndex == 32)
+                m_armySpawnTimer = 50000;
+            else if (m_armySpawnWave == AQ_ARMY_WAVE_TWO && m_armySpawnIndex > 32)
+                m_armySpawnTimer = 100;
+            else
+                m_armySpawnTimer = m_armySpawnWave == AQ_ARMY_WAVE_TWO ? 1250 : 1000;
         }
 
         void DoUnsummonArmy()
         {
+            // Do not let a queued wave continue after the scene has cleaned up.
+            m_armySpawnWave = 0;
+            m_armyWaveTwoQueued = false;
             for (GuidList::const_iterator itr = m_lQirajiWarriorsList.begin(); itr != m_lQirajiWarriorsList.end(); ++itr)
             {
                 if (Creature* pTemp = m_creature->GetMap()->GetCreature(*itr))
@@ -705,6 +751,7 @@ struct npc_anachronos_the_ancient : public CreatureScript
         void UpdateAI(const uint32 uiDiff) override
         {
             DialogueUpdate(uiDiff);
+            UpdateArmySummoning(uiDiff);
 
             if (m_uiEventTimer)
             {
