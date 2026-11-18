@@ -1358,7 +1358,8 @@ struct npc_aq_war_colossus : public CreatureScript
                     delete deathSpawn;
             }
 
-            if (AqWarEffort::GetRuntime().ReportColossusDeath(boss) == AqWarEffort::Result::StorageError)
+            auto const result = AqWarEffort::GetRuntime().ReportColossusDeath(boss);
+            if (result == AqWarEffort::Result::StorageError || result == AqWarEffort::Result::Busy)
                 sLog.outError("Failed to persist AQ war effort colossus death (%u); queued for retry.", m_creature->GetEntry());
         }
     };
