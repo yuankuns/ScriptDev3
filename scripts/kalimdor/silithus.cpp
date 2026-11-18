@@ -1175,6 +1175,9 @@ struct npc_aq_war_colossus : public CreatureScript
         void JustRespawned() override
         {
             ScriptedAI::JustRespawned();
+            if (!sWorld.getConfig(CONFIG_BOOL_AQ_WAR_EFFORT))
+                return;
+
             switch (m_creature->GetEntry())
             {
                 case 15740: DoScriptText(-1999923, m_creature); break;
@@ -1188,14 +1191,34 @@ struct npc_aq_war_colossus : public CreatureScript
         {
             if (!sWorld.getConfig(CONFIG_BOOL_AQ_WAR_EFFORT))
                 return;
+
             AqWarEffort::Colossus boss;
+            uint32 deathSpawnGuid = 0;
             switch (m_creature->GetEntry())
             {
-                case 15742: boss = AqWarEffort::Colossus::Ashi; break;
-                case 15741: boss = AqWarEffort::Colossus::Regal; break;
-                case 15740: boss = AqWarEffort::Colossus::Zora; break;
+                // Source Classic DB creature GUIDs 155123, 155124, and 155122
+                // are remapped to 800055, 800056, and 800054 in migration 006.
+                case 15742: boss = AqWarEffort::Colossus::Ashi; deathSpawnGuid = 800055; break;
+                case 15741: boss = AqWarEffort::Colossus::Regal; deathSpawnGuid = 800056; break;
+                case 15740: boss = AqWarEffort::Colossus::Zora; deathSpawnGuid = 800054; break;
                 default: return;
             }
+
+            CreatureData const* spawnData = sObjectMgr.GetCreatureData(deathSpawnGuid);
+            if (!spawnData || spawnData->mapid != m_creature->GetMap()->GetId())
+            {
+                sLog.outError("AQ colossus %u has no matching death spawn GUID %u on map %u",
+                    m_creature->GetEntry(), deathSpawnGuid, m_creature->GetMap()->GetId());
+            }
+            else
+            {
+                // Match CMaNGOS WorldObject::SpawnCreature: materialize the
+                // static database spawn immediately at its authored location.
+                Creature* deathSpawn = new Creature;
+                if (!deathSpawn->LoadFromDB(deathSpawnGuid, m_creature->GetMap()))
+                    delete deathSpawn;
+            }
+
             if (AqWarEffort::GetRuntime().ReportColossusDeath(boss) == AqWarEffort::Result::StorageError)
                 sLog.outError("Failed to persist AQ war effort colossus death (%u); queued for retry.", m_creature->GetEntry());
         }
