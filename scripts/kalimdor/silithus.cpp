@@ -1162,15 +1162,41 @@ struct npc_solenor_the_slayer : public CreatureScript
     }
 };
 
-// Ahn'Qiraj war effort colossi. Combat uses ScriptedAI's normal melee
-// behavior; the event controller owns the persistent kill state.
+// Ahn'Qiraj war effort colossi. The reference creature spell list gives all
+// three bosses Colossal Smash (26167), initially after 15-30 seconds and then
+// every 60-90 seconds. The event controller owns the persistent kill state.
 struct npc_aq_war_colossus : public CreatureScript
 {
     npc_aq_war_colossus() : CreatureScript("npc_aq_war_colossus") {}
 
     struct npc_aq_war_colossusAI : public ScriptedAI
     {
-        explicit npc_aq_war_colossusAI(Creature* creature) : ScriptedAI(creature) {}
+        explicit npc_aq_war_colossusAI(Creature* creature) : ScriptedAI(creature), m_uiColossalSmashTimer(0) {}
+
+        uint32 m_uiColossalSmashTimer;
+
+        void Reset() override
+        {
+            m_uiColossalSmashTimer = urand(15000, 30000);
+        }
+
+        void UpdateAI(const uint32 uiDiff) override
+        {
+            if (!m_creature->SelectHostileTarget() || !m_creature->getVictim())
+                return;
+
+            if (m_uiColossalSmashTimer <= uiDiff)
+            {
+                if (DoCastSpellIfCan(m_creature->getVictim(), 26167) == CAST_OK)
+                    m_uiColossalSmashTimer = urand(60000, 90000);
+                else
+                    m_uiColossalSmashTimer = 1000;
+            }
+            else
+                m_uiColossalSmashTimer -= uiDiff;
+
+            DoMeleeAttackIfReady();
+        }
 
         void JustRespawned() override
         {
