@@ -1319,9 +1319,9 @@ struct npc_aq_war_colossus : public CreatureScript
 
             switch (m_creature->GetEntry())
             {
-                case 15740: DoScriptText(-1999923, m_creature); break;
-                case 15741: DoScriptText(-1999924, m_creature); break;
-                case 15742: DoScriptText(-1999925, m_creature); break;
+                case 15740: DoScriptText(-1999800, m_creature); break;
+                case 15741: DoScriptText(-1999801, m_creature); break;
+                case 15742: DoScriptText(-1999802, m_creature); break;
                 default: break;
             }
         }
