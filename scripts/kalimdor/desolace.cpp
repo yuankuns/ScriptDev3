@@ -467,6 +467,7 @@ enum
 
     NPC_CORK_GIZELTON       = 11625,
     NPC_RIGGER_GIZELTON     = 11626,
+    NPC_GIZELTON_CARAVAN_KODO = 11564,
     NPC_VENDOR_TRON         = 12245,
     NPC_SUPER_SELLER        = 12246,
 
@@ -514,6 +515,26 @@ static const SummonLocation aAmbushLocsGizelton[9] =
 
 static const uint32 AmbushersBodyguard[4] = { NPC_KOLKAR_WAYLAYER, NPC_KOLKAR_AMBUSHER, NPC_KOLKAR_WAYLAYER, NPC_KOLKAR_AMBUSHER };
 static const uint32 AmbushersGizleton[3] = { NPC_NETHER_SORCERESS, NPC_LESSER_INFERNAL, NPC_DOOMWARDER };
+
+// Rigger and the caravan kodos have no waypoint path of their own. Keep them
+// attached to Cork while either Gizelton escort quest is underway.
+static void StartGizeltonCaravanFollow(Creature* pCork)
+{
+    Creature* pRigger = GetClosestCreatureWithEntry(pCork, NPC_RIGGER_GIZELTON, 100.0f);
+    if (pRigger)
+    {
+        pRigger->GetMotionMaster()->MoveFollow(pCork, 2.0f, 0.0f);
+    }
+
+    std::list<Creature*> kodos;
+    GetCreatureListWithEntryInGrid(kodos, pCork, NPC_GIZELTON_CARAVAN_KODO, 100.0f);
+    float angle = M_PI / 2;
+    for (std::list<Creature*>::const_iterator itr = kodos.begin(); itr != kodos.end(); ++itr)
+    {
+        (*itr)->GetMotionMaster()->MoveFollow(pCork, 3.0f, angle);
+        angle += M_PI;
+    }
+}
 
 struct npc_cork_gizelton : public CreatureScript
 {
@@ -732,6 +753,11 @@ struct npc_cork_gizelton : public CreatureScript
     {
         if (pQuest->GetQuestId() == QUEST_BODYGUARD_TO_HIRE)
         {
+            StartGizeltonCaravanFollow(pCreature);
+        }
+
+        if (pQuest->GetQuestId() == QUEST_BODYGUARD_TO_HIRE)
+        {
             if (pPlayer->GetTeam() == ALLIANCE)
             {
                 pCreature->SetFactionTemporary(FACTION_ESCORT_A_PASSIVE, TEMPFACTION_RESTORE_RESPAWN);
@@ -791,6 +817,7 @@ struct npc_rigger_gizelton : public CreatureScript
             if (Creature* pCork = GetClosestCreatureWithEntry(pCreature, NPC_CORK_GIZELTON, 100.0f))
             {
                 pCreature->AI()->SendAIEvent(AI_EVENT_START_ESCORT, pPlayer, pCork, pQuest->GetQuestId());
+                StartGizeltonCaravanFollow(pCork);
             }
         }
 
