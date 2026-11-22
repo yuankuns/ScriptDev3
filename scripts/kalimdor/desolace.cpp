@@ -790,7 +790,16 @@ struct npc_rigger_gizelton : public CreatureScript
     {
         npc_rigger_gizeltonAI(Creature* pCreature) : ScriptedAI(pCreature) { Reset(); }
 
-        void Reset() override {}
+        void Reset() override
+        {
+            // Cork is loaded before Rigger on this spawn path. Start following
+            // when Rigger enters the grid so the caravan is together before
+            // waypoint scripts try to address its members.
+            if (Creature* pCork = GetClosestCreatureWithEntry(m_creature, NPC_CORK_GIZELTON, 100.0f))
+            {
+                StartGizeltonCaravanFollow(pCork);
+            }
+        }
     };
 
     CreatureAI* GetAI_npc_rigger_gizelton(Creature* pCreature)
